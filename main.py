@@ -1,59 +1,123 @@
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Tuple,Optional
 from tqdm import tqdm
-from network.dtp import DTPNetwork, DTPConfig
+
+# script imports
+from network.dtp_networks import DDTPNetwork
 from environment import MovementBuffer, inverse_target_transform, create_batch
 from kinematics.planar_arms import PlanarArms
 
 
-def create_dtp_network(
-        layer_dims: List[int],
-        activation: str = "tanh",
-        config: Optional[DTPConfig] = None,
-        bias: bool = True,
+def create_ddtp_network(
+        layer_dims: List[int] | Tuple[int],
+        ff_activation: str = "elu",
+        fb_activation: str = "elu",
         final_activation: Optional[str] = None,
-) -> DTPNetwork:
-    """Create a DTP network with the specified architecture."""
-    if config is None:
-        config = DTPConfig()
+) -> DDTPNetwork:
+    """Create a DDTP network with the specified architecture."""
+    activation_map = {
+        "elu": nn.ELU(),
+        "relu": nn.ReLU(),
+        "leaky_relu": nn.LeakyReLU(),
+        "sigmoid": nn.Sigmoid(),
+        "tanh": nn.Tanh(),
+        "none": None
+    }
 
-    return DTPNetwork(
+    ff_activation = activation_map.get(ff_activation, nn.ELU())
+    fb_activation = activation_map.get(fb_activation, nn.ELU())
+    output_act = activation_map.get(final_activation, None)
+
+    return DDTPNetwork(
         layer_sizes=layer_dims,
-        activation=activation,
-        config=config,
-        bias=bias,
-        final_activation=final_activation
+        ff_activation=ff_activation,
+        fb_activation=fb_activation,
+        output_activation=output_act
     )
 
 
 def train_epoch(
-        network: DTPNetwork,
-        optimizer: torch.optim.Optimizer,
+        network: DDTPNetwork,
         buffer: MovementBuffer,
         num_batches: int,
         batch_size: int,
+        lr_forward: float = 0.001,
+        lr_feedback: float = 0.003,
+        feedback_weight_decay: float = 1e-5,
+        target_stepsize: float = 0.9,  # beta
+        sigma: float = 0.1,  # noise std
+        feedback_training_iterations: int = 3,
+        device: torch.device = torch.device('cpu')
 ) -> Dict[str, float]:
+
     """Train the network for one epoch using the movement buffer."""
-    network.train()
+    # Create separate optimizers for forward and feedback weights
+    forward_params = []
+    for layer in network.forward_layers:
+        forward_params.extend(list(layer.parameters()))
+
+    feedback_params = []
+    for layer in network.feedback_layers:
+        feedback_params.extend(list(layer.parameters()))
+
+    forward_optimizer = optim.Adam(forward_params, lr=lr_forward)
+    feedback_optimizer = optim.Adam(feedback_params, lr=lr_feedback, weight_decay=feedback_weight_decay)
+    mse_loss = nn.MSELoss()  # use MSE loss for regression tasks
+
     total_forward_loss = 0.0
     total_feedback_loss = 0.0
 
     for _ in range(num_batches):
         # Generate a batch
         inputs, targets, _ = buffer.get_batches(batch_size=batch_size)
+        inputs, targets = inputs.to(device), targets.to(device)
 
-        # Train step
-        optimizer.zero_grad()
-        forward_loss, feedback_loss = network.train_step(inputs, targets)
+        # ===== Phase 1: Train fb weights with DRL =====
+        feedback_loss = 0.0
+        for _ in range(feedback_training_iterations):
+            # Forward pass (needed to compute hidden layer activations)
+            output = network(inputs)
 
-        # Update weights
-        forward_loss.backward()
-        optimizer.step()
+            feedback_optimizer.zero_grad()
 
-        total_forward_loss += forward_loss.item()
-        total_feedback_loss += feedback_loss.item()
+            # Compute DRL loss for each feedback layer
+            fb_loss = 0
+            for i in range(len(network.feedback_layers)):
+                fb_loss += network.drl_loss(i, sigma)
+
+            # Update feedback weights
+            fb_loss.backward()
+            feedback_optimizer.step()
+            feedback_loss += fb_loss.item()
+
+        feedback_loss /= feedback_training_iterations
+
+        # ===== Phase 2: Train ff weights with local losses =====
+        output = network(inputs)  # (recomputed after feedback weight updates)
+
+        # compute output loss
+        output_loss = mse_loss(output, targets)
+
+        # compute output targets
+        output_target = output - target_stepsize * (output - targets)
+        forward_optimizer.zero_grad()
+
+        # Compute targets for each hidden layer
+        hidden_targets = network.compute_targets(output, output_target)
+
+        # compute local losses for each hidden layer
+        local_losses = network.local_loss(hidden_targets)
+        total_local_loss = sum(local_losses)
+
+        # Update forward weights based on local losses
+        total_local_loss.backward()
+        forward_optimizer.step()
+
+        total_forward_loss += output_loss.item()
+        total_feedback_loss += feedback_loss
 
     return {
         'forward_loss': total_forward_loss / num_batches,
@@ -62,24 +126,22 @@ def train_epoch(
 
 
 def train_network(
-        network: DTPNetwork,
+        network: DDTPNetwork,
         num_epochs: int,
         num_batches: int,
         batch_size: int,
         trainings_buffer_size: int,
         arm: str,
         device: torch.device,
-        learning_rate: float = 1e-4,
+        lr_forward: float = 0.001,
+        lr_feedback: float = 0.003,
+        feedback_weight_decay: float = 1e-5,
+        target_stepsize: float = 0.1,
+        sigma: float = 0.01,
+        feedback_training_iterations: int = 3,
         validation_interval: int = 10
 ) -> Dict[str, List[float]]:
     """Train the network for multiple epochs with validation."""
-    # Initialize optimizer
-    optimizer = torch.optim.SGD(
-        network.parameters(),
-        lr=learning_rate,
-        momentum=0.9,
-        weight_decay=1e-5
-    )
 
     # Initialize dataset
     trainings_buffer = MovementBuffer(
@@ -102,10 +164,16 @@ def train_network(
         # Train for one epoch
         epoch_losses = train_epoch(
             network=network,
-            optimizer=optimizer,
             buffer=trainings_buffer,
             num_batches=num_batches,
             batch_size=batch_size,
+            lr_forward=lr_forward,
+            lr_feedback=lr_feedback,
+            feedback_weight_decay=feedback_weight_decay,
+            target_stepsize=target_stepsize,
+            sigma=sigma,
+            feedback_training_iterations=feedback_training_iterations,
+            device=device
         )
 
         history['forward_loss'].append(epoch_losses['forward_loss'])
@@ -132,7 +200,7 @@ def train_network(
 
 
 def evaluate_reaching(
-        network: DTPNetwork,
+        network: DDTPNetwork,
         num_tests: int,
         arm: str,
         device: torch.device
@@ -148,9 +216,10 @@ def evaluate_reaching(
                 arm=arm,
                 device=device
             )
+            inputs, targets = inputs.to(device), targets.to(device)
 
             # Get network prediction
-            outputs, _ = network.forward(inputs)
+            outputs = network(inputs)
 
             # Convert network outputs and targets back to radians
             target_delta_thetas = inverse_target_transform(targets.cpu().numpy())
@@ -183,15 +252,16 @@ if __name__ == "__main__":
     parser.add_argument('--arm', type=str, default="right", choices=["right", "left"])
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_batches', type=int, default=100)
-    parser.add_argument('--num_epochs', type=int, default=5_000)
+    parser.add_argument('--num_epochs', type=int, default=1_000)
     parser.add_argument('--trainings_buffer_size', type=int, default=5_000)
-    parser.add_argument('--validation_interval', type=int, default=50)
+    parser.add_argument('--validation_interval', type=int, default=25)
     parser.add_argument('--device', type=str, default="cpu")
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--beta', type=float, default=0.9)
-    parser.add_argument('--noise_scale', type=float, default=0.1)
-    parser.add_argument('--K_iterations', type=int, default=3, help="Number of feedback updates during training")
-    parser.add_argument('--feedback_lr', type=float, default=1e-4)
+    parser.add_argument('--lr_forward', type=float, default=5e-4)
+    parser.add_argument('--lr_feedback', type=float, default=0.001)
+    parser.add_argument('--feedback_weight_decay', type=float, default=1e-5)
+    parser.add_argument('--target_stepsize', type=float, default=0.5)  # former beta param
+    parser.add_argument('--sigma', type=float, default=0.1)  # maybe try 0.05
+    parser.add_argument('--feedback_training_iterations', type=int, default=3)
     parser.add_argument('--plot_history', type=bool, default=True)
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
@@ -204,20 +274,12 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     print(f'Pytorch version: {torch.__version__} running on {device}')
 
-    # Setup network configuration
-    config = DTPConfig(
-        beta=args.beta,
-        noise_scale=args.noise_scale,
-        K_iterations=args.K_iterations,
-        learning_rate=args.feedback_lr
-    )
-
     # Create network
-    layer_sizes = [4, 128, 128, 2]  # Example sizes for joint angle problem
-    network = create_dtp_network(
+    layer_sizes = [4, 128, 128, 2]
+    network = create_ddtp_network(
         layer_dims=layer_sizes,
-        activation='elu',
-        config=config
+        ff_activation='elu',
+        final_activation=None
     )
     network = network.to(device)
 
@@ -231,7 +293,12 @@ if __name__ == "__main__":
         arm=args.arm,
         device=device,
         validation_interval=args.validation_interval,
-        learning_rate=args.lr
+        lr_forward=args.lr_forward,
+        lr_feedback=args.lr_feedback,
+        feedback_weight_decay=args.feedback_weight_decay,
+        target_stepsize=args.target_stepsize,
+        sigma=args.sigma,
+        feedback_training_iterations=args.feedback_training_iterations
     )
 
     # Final evaluation
@@ -254,10 +321,19 @@ if __name__ == "__main__":
         fig, axs = plt.subplots(nrows=3, ncols=1, figsize=(12, 8))
         axs[0].plot(history['forward_loss'], label='Forward Loss')
         axs[1].plot(history['feedback_loss'], label='Feedback Loss')
-        axs[2].plot(history['validation_error'], label='Validation Error')
+        axs[2].plot(history['validation_error'], label='Validation Error (mm)')
         for ax in axs:
             ax.set_xlabel('Epoch')
             ax.legend()
+            ax.grid(True)
+        axs[0].set_ylabel('Forward Loss')
+        axs[1].set_ylabel('Feedback Loss')
+        axs[2].set_ylabel('Error (mm)')
         plt.tight_layout()
-        plt.savefig(plot_folder + f"history_{args.arm}.png")
+        plt.savefig(plot_folder + f"ddtp_history_{args.arm}.png")
         plt.close(fig)
+
+        # Save model
+        model_folder = "models/"
+        os.makedirs(model_folder, exist_ok=True)
+        torch.save(network.state_dict(), model_folder + f"ddtp_network_{args.arm}.pt")
