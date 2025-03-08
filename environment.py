@@ -35,8 +35,8 @@ def inverse_input_transform(inputs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]
     :return: tuple of (joint angles in radians, xy coordinates)
     """
     # Split inputs into angles and coordinates
-    angles_norm = inputs[:, :2]
-    xy_norm = inputs[:, 2:]
+    angles_norm = inputs[:, :2][0]
+    xy_norm = inputs[:, 2:][0]
 
     # Convert normalized angles back to radians
     thetas = (angles_norm + 1) / 2 * (
@@ -61,10 +61,10 @@ def target_transform(thetas: np.ndarray) -> np.ndarray:
     :return: normalized angle changes (batch_size, 2)
     """
     # Maximum angle change is the full range (≈ 3.14 radians or 180 degrees)
-    max_angle_change = PlanarArms.u_upper_arm_limit - PlanarArms.l_upper_arm_limit
+    max_angle_change = np.abs(PlanarArms.u_upper_arm_limit - PlanarArms.l_upper_arm_limit)
 
     # Normalize the changes to [-1, 1]
-    return thetas / (max_angle_change / 2)
+    return thetas / max_angle_change
 
 
 def inverse_target_transform(normalized_thetas: np.ndarray) -> np.ndarray:
@@ -74,10 +74,10 @@ def inverse_target_transform(normalized_thetas: np.ndarray) -> np.ndarray:
     :return: angle changes in radians (batch_size, 2)
     """
     # Maximum angle change
-    max_angle_change = PlanarArms.u_upper_arm_limit - PlanarArms.l_upper_arm_limit
+    max_angle_change = np.abs(PlanarArms.u_upper_arm_limit - PlanarArms.l_upper_arm_limit)
 
     # Convert back to radians
-    return normalized_thetas * (max_angle_change / 2)
+    return normalized_thetas * max_angle_change
 
 
 def norm_xy(xy: np.ndarray,
@@ -187,12 +187,5 @@ if __name__ == "__main__":
     movements = MovementBuffer(arm='right', buffer_size=10000, device=torch.device('cpu'))
     movements.fill_buffer()
     inputs, targets, init_thetas = movements.get_batches(batch_size=8)
-    print(len(movements))
-    print(inputs.shape)
-    print(targets.shape)
-    print(init_thetas.shape)
 
-    inputs, targets, init_thetas = create_batch(arm='right', device=torch.device('cpu'))
-    print(inputs.shape)
-    print(targets.shape)
-    print(init_thetas.shape)
+    print(inputs, targets, init_thetas)
