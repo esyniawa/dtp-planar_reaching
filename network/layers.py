@@ -85,3 +85,63 @@ class FeedbackLayer(nn.Module):
         target = target_from_output + (hidden_true - reconstruction)
 
         return target
+
+
+class FeedbackLayerRHL(nn.Module):
+    """
+    Direct feedback connection with a random hidden layer intermediary (not used).
+    """
+    def __init__(self,
+                 output_size: int,
+                 target_size: int,
+                 activation: nn.Module = nn.ELU(),
+                 random_size: int = 1024):
+        """
+        Initialize the feedback layer with RHL.
+
+        :arg output_size: Size of the output layer
+        :arg target_size: Size of the target hidden layer
+        :arg activation: Activation function to use
+        :arg random_size: Size of the random hidden layer
+        """
+        super().__init__()
+
+        # Create the two-stage feedback pathway
+        self.random_mapping = nn.Linear(output_size, random_size)
+        self.feedback_mapping = nn.Linear(random_size, target_size)
+        self.activation = activation
+
+        # Initialize weights
+        nn.init.xavier_normal_(self.random_mapping.weight)
+        nn.init.zeros_(self.random_mapping.bias)
+        nn.init.xavier_normal_(self.feedback_mapping.weight)
+        nn.init.zeros_(self.feedback_mapping.bias)
+
+    def forward(self, output: torch.Tensor):
+        """
+        Forward pass of feedback connections through the random hidden layer
+
+        :arg output: The output layer activations
+        :return Feedback signal for the hidden layer
+        """
+        # Pass through random hidden layer with activation
+        random_hidden = self.activation(self.random_mapping(output))
+
+        # Pass through feedback mapping to target layer
+        pre_activation = self.feedback_mapping(random_hidden)
+        return self.activation(pre_activation) if self.activation else pre_activation
+
+    def compute_target(self, output: torch.Tensor, output_target: torch.Tensor, hidden_true: torch.Tensor):
+        """
+        Compute difference target propagation target
+        """
+        # g_i(h_hat_L): Feedback from output target
+        target_from_output = self.forward(output_target)
+
+        # g_i(h_L): Feedback from actual output
+        reconstruction = self.forward(output)
+
+        # Add difference correction (h_i - g_i(h_L))
+        target = target_from_output + (hidden_true - reconstruction)
+
+        return target
