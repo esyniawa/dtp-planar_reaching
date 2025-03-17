@@ -10,26 +10,25 @@ The project consists of two main components:
    - Forward kinematics for end-effector positioning
    - Inverse kinematics for joint angle calculation
    - Workspace constraints and joint limits
-   - Visualization capabilities
 
 2. **Difference Target Propagation Network**: A neural network that learns to generate reaching movements with:
-   - Layer-wise training using DTP
-   - Feedback weight learning through reconstruction
-   - Forward/backward pathway optimization
-   - Target propagation for hidden layers
+   - Direct DTP
+   - Feedback weight learning through local target computation
+   - Feedforward weight through DRL
 
 ## Project Structure
 
 ```
 esyniawa-dtp-planar_reaching/
-├── LICENSE                 # MIT License
-├── environment.py         # Environment setup and data handling
+├── LICENSE               # MIT License
+├── environment.py        # Environment setup and data handling
 ├── main.py               # Training script and network creation (example)
 ├── kinematics/          
 │   ├── planar_arms.py    # Planar arm implementation
 │   └── utils.py          # Kinematics utilities
 └── network/
-    └── dtp.py            # DTP network implementation
+    ├── dtp_networks.py           # DDTP networks implementation
+    └── layers.py                 # Feedforward and feedback layer definitions
 ```
 
 ## Implementation Details
@@ -38,7 +37,6 @@ esyniawa-dtp-planar_reaching/
 - Two-joint arm with shoulder and elbow
 - Configurable link lengths and joint limits
 - Support for both left and right arm configurations
-- Smooth trajectory generation with cosine interpolation
 
 ### DTP Network
 - Customizable layer architecture
@@ -50,8 +48,9 @@ esyniawa-dtp-planar_reaching/
 ## Dependencies
 
 - PyTorch
-- NumPy
 - Matplotlib
+- tqdm
+- pandas
 
 ## License
 
@@ -60,5 +59,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Acknowledgments
 
 Based on research in target propagation and biological learning mechanisms, particularly:
-- Lee et al. (2015) "Difference Target Propagation"
-- Meulemans et al. (2020) "A Theoretical Framework for Target Propagation"
+- Lee et al. (2015) ["Difference Target Propagation"](https://link.springer.com/chapter/10.1007/978-3-319-23528-8_31)
+- Meulemans et al. (2020) ["A Theoretical Framework for Target Propagation"](https://proceedings.neurips.cc/paper_files/paper/2020/hash/e7a425c6ece20cbc9056f98699b53c6f-Abstract.html)
