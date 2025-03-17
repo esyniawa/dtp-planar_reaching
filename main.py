@@ -6,9 +6,34 @@ from typing import Dict, List, Tuple,Optional
 from tqdm import tqdm
 
 # script imports
-from network.dtp_networks import DDTPNetwork
+from network.dtp_networks import DDTPNetwork, DDTPRHLNetwork
 from environment import MovementBuffer, inverse_target_transform, create_batch
 from kinematics.planar_arms import PlanarArms
+
+
+def argument_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--arm', type=str, default="right", choices=["right", "left"])
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--num_batches', type=int, default=100)
+    parser.add_argument('--num_epochs', type=int, default=1000)
+    parser.add_argument('--rhl_size', type=int, default=None)  # None for DDTP: linear
+    parser.add_argument('--trainings_buffer_size', type=int, default=5_000)
+    parser.add_argument('--validation_interval', type=int, default=25)
+    parser.add_argument('--device', type=str, default="cpu")
+    parser.add_argument('--lr_forward', type=float, default=1e-4)
+    parser.add_argument('--lr_feedback', type=float, default=5e-5)
+    parser.add_argument('--feedback_weight_decay', type=float, default=1e-6)
+    parser.add_argument('--target_stepsize', type=float, default=0.9)  # former beta param
+    parser.add_argument('--sigma', type=float, default=0.1)  # maybe try 0.05
+    parser.add_argument('--feedback_training_iterations', type=int, default=3)
+    parser.add_argument('--plot_history', type=bool, default=True)
+    parser.add_argument('--seed', type=int, default=1)
+    args = parser.parse_args()
+
+    return args, parser
 
 
 def create_ddtp_network(
@@ -16,7 +41,8 @@ def create_ddtp_network(
         ff_activation: str = "elu",
         fb_activation: str = "elu",
         final_activation: Optional[str] = None,
-) -> DDTPNetwork:
+        rhl_size: Optional[int] = None,
+) -> DDTPNetwork | DDTPRHLNetwork:
     """Create a DDTP network with the specified architecture."""
     activation_map = {
         "elu": nn.ELU(),
@@ -31,16 +57,25 @@ def create_ddtp_network(
     fb_activation = activation_map.get(fb_activation, nn.ELU())
     output_act = activation_map.get(final_activation, None)
 
-    return DDTPNetwork(
-        layer_sizes=layer_dims,
-        ff_activation=ff_activation,
-        fb_activation=fb_activation,
-        output_activation=output_act
-    )
+    if rhl_size is not None:
+        return DDTPRHLNetwork(
+            layer_sizes=layer_dims,
+            ff_activation=ff_activation,
+            fb_activation=fb_activation,
+            output_activation=output_act,
+            random_hidden_size=rhl_size
+        )
+    else:
+        return DDTPNetwork(
+            layer_sizes=layer_dims,
+            ff_activation=ff_activation,
+            fb_activation=fb_activation,
+            output_activation=output_act
+        )
 
 
 def train_epoch(
-        network: DDTPNetwork,
+        network: DDTPNetwork | DDTPRHLNetwork,
         buffer: MovementBuffer,
         num_batches: int,
         batch_size: int,
@@ -79,7 +114,7 @@ def train_epoch(
         feedback_loss = 0.0
         for _ in range(feedback_training_iterations):
             # Forward pass (needed to compute hidden layer activations)
-            output = network(inputs)
+            output = network.forward(inputs)
 
             feedback_optimizer.zero_grad()
 
@@ -91,7 +126,7 @@ def train_epoch(
             # Update feedback weights
             fb_loss.backward()
             feedback_optimizer.step()
-            feedback_loss += fb_loss.item()
+            feedback_loss += fb_loss.item() / num_batches
 
         feedback_loss /= feedback_training_iterations
 
@@ -110,7 +145,7 @@ def train_epoch(
 
         # compute local losses for each hidden layer
         local_losses = network.local_loss(hidden_targets)
-        total_local_loss = sum(local_losses)
+        total_local_loss = sum(local_losses) / num_batches
 
         # Update forward weights based on local losses
         total_local_loss.backward()
@@ -120,13 +155,13 @@ def train_epoch(
         total_feedback_loss += feedback_loss
 
     return {
-        'forward_loss': total_forward_loss / num_batches,
-        'feedback_loss': total_feedback_loss / num_batches
+        'forward_loss': total_forward_loss,
+        'feedback_loss': total_feedback_loss
     }
 
 
 def train_network(
-        network: DDTPNetwork,
+        network: DDTPNetwork | DDTPRHLNetwork,
         num_epochs: int,
         num_batches: int,
         batch_size: int,
@@ -200,7 +235,7 @@ def train_network(
 
 
 def evaluate_reaching(
-        network: DDTPNetwork,
+        network: DDTPNetwork | DDTPRHLNetwork,
         num_tests: int,
         arm: str,
         device: torch.device
@@ -246,25 +281,7 @@ def evaluate_reaching(
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--arm', type=str, default="right", choices=["right", "left"])
-    parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--num_batches', type=int, default=100)
-    parser.add_argument('--num_epochs', type=int, default=1_000)
-    parser.add_argument('--trainings_buffer_size', type=int, default=5_000)
-    parser.add_argument('--validation_interval', type=int, default=25)
-    parser.add_argument('--device', type=str, default="cpu")
-    parser.add_argument('--lr_forward', type=float, default=5e-4)
-    parser.add_argument('--lr_feedback', type=float, default=0.001)
-    parser.add_argument('--feedback_weight_decay', type=float, default=1e-5)
-    parser.add_argument('--target_stepsize', type=float, default=0.5)  # former beta param
-    parser.add_argument('--sigma', type=float, default=0.1)  # maybe try 0.05
-    parser.add_argument('--feedback_training_iterations', type=int, default=3)
-    parser.add_argument('--plot_history', type=bool, default=True)
-    parser.add_argument('--seed', type=int, default=42)
-    args = parser.parse_args()
+    args, _ = argument_parser()
 
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
@@ -279,7 +296,8 @@ if __name__ == "__main__":
     network = create_ddtp_network(
         layer_dims=layer_sizes,
         ff_activation='elu',
-        final_activation=None
+        final_activation=None,
+        rhl_size=args.rhl_size
     )
     network = network.to(device)
 
