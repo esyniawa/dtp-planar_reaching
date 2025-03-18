@@ -99,7 +99,8 @@ def norm_xy(xy: np.ndarray,
 
 
 def generate_random_movement(arm: str, min_distance: float = 50.):
-    # Random joint angles
+    
+    # Sample random joint angles (shoulder and elbow) uniformly inside the given joint limits
     init_shoulder_thetas, target_shoulder_thetas = np.random.uniform(low=PlanarArms.l_upper_arm_limit,
                                                                      high=PlanarArms.u_upper_arm_limit,
                                                                      size=2)
@@ -108,10 +109,11 @@ def generate_random_movement(arm: str, min_distance: float = 50.):
                                                                high=PlanarArms.u_forearm_limit,
                                                                size=2)
 
+    # Put together the init and target angles
     init_thetas = np.array((init_shoulder_thetas, init_elbow_thetas))
     target_thetas = np.array((target_shoulder_thetas, target_elbow_thetas))
 
-    # Calculate distance
+    # Calculate the joint positions out of the joint angles
     init_pos = PlanarArms.forward_kinematics(arm=arm,
                                              thetas=init_thetas,
                                              radians=True)[:, -1]
@@ -119,7 +121,7 @@ def generate_random_movement(arm: str, min_distance: float = 50.):
     target_pos = PlanarArms.forward_kinematics(arm=arm,
                                                thetas=target_thetas,
                                                radians=True)[:, -1]
-
+    # Calculate distance between initial position and target position
     distance = np.linalg.norm(target_pos - init_pos)
 
     # If distance is too small, call function again
@@ -143,6 +145,7 @@ class MovementBuffer:
 
     def fill_buffer(self, min_distance: float = 50.):
         while len(self.buffer) < self.buffer_size:
+            # Generate sample joint angle combinations
             init_thetas, target_thetas, _, target_pos = generate_random_movement(arm=self.arm, min_distance=min_distance)
 
             # Scale data

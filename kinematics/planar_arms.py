@@ -52,11 +52,17 @@ class PlanarArms:
 
     @staticmethod
     def check_values(angles: np.ndarray, radians: bool):
+        
+        """ Check whether the sample joints are ok. """
+        
+        # Check number of joints
         assert angles.size == 2, "Arm must contain two angles: angle shoulder, angle elbow"
 
+        # Check if joint are in rad not in degree
         if not radians:
             angles = np.radians(angles)
 
+        # Check joint limits
         if angles[0] < PlanarArms.l_upper_arm_limit or angles[0] > PlanarArms.u_upper_arm_limit:
             raise AssertionError('Check joint limits for upper arm')
         elif angles[1] < PlanarArms.l_forearm_limit or angles[1] > PlanarArms.u_forearm_limit:
@@ -119,6 +125,7 @@ class PlanarArms:
     @staticmethod
     def forward_kinematics(arm: str, thetas: np.ndarray, radians: bool = False, check_limits: bool = True):
 
+        # Check whether sampled joint are okay
         if check_limits:
             theta1, theta2 = PlanarArms.check_values(thetas, radians)
         else:
@@ -133,6 +140,7 @@ class PlanarArms:
         else:
             raise ValueError('Please specify if the arm is right or left!')
 
+        # Create DH matrices
         A0 = create_dh_matrix(a=const * PlanarArms.shoulder_length, d=0,
                               alpha=0, theta=0)
 

@@ -30,7 +30,9 @@ class DDTPNetwork(nn.Module):
         self.layer_sizes = layer_sizes
         n_layers = len(layer_sizes)
 
+        ######################################################################################################
         # Create forward layers
+        ######################################################################################################
         self.forward_layers = nn.ModuleList()
         for i in range(n_layers - 1):
             act = output_activation if i == n_layers - 2 else ff_activation
@@ -39,14 +41,17 @@ class DDTPNetwork(nn.Module):
                                      activation=act)
             self.forward_layers.append(layer)
 
+        ######################################################################################################
         # Create feedback layers (direct connections from output to each hidden layer)
+        ######################################################################################################
         self.feedback_layers = nn.ModuleList()
         # No feedback for output layer, only for hidden layers
         for i in range(n_layers - 2):
             # From output layer to hidden layer i = Direct DTP
-            self.feedback_layers.append(FeedbackLayer(output_size=layer_sizes[-1],
-                                                      target_size=layer_sizes[i + 1],
-                                                      activation=fb_activation))
+            layer = FeedbackLayer(output_size=layer_sizes[-1],
+                                  target_size=layer_sizes[i + 1],
+                                  activation=fb_activation)
+            self.feedback_layers.append(layer)
 
     def forward(self, x):
         """Forward pass through the network. Gradients are detached in FeedforwardLayer"""
@@ -95,6 +100,8 @@ class DDTPNetwork(nn.Module):
         :arg sigma: Standard deviation of noise perturbation
         :return: The DRL loss for the specified feedback layer
         """
+        
+        # Check that index is valid number inside the layers
         assert 0 <= idx < len(self.feedback_layers), "Invalid feedback layer index"
 
         hidden_layer = self.forward_layers[idx]
@@ -105,7 +112,7 @@ class DDTPNetwork(nn.Module):
         output_true = self.forward_layers[-1].output
 
         # Add noise to hidden activations (noise corruption)
-        noise = torch.randn_like(hidden_true) * sigma
+        noise = torch.randn_like(hidden_true) * sigma 
         hidden_noisy = hidden_true + noise  # (h_i + noise)
 
         # Forward propagate the noise through the network to the output
@@ -115,13 +122,14 @@ class DDTPNetwork(nn.Module):
         output_noisy = h
 
         # Reconstruct the hidden activations using feedback connections with difference correction
-        # g_L,i(f_i,L(h_i + noise), h_L, h_i)
+        # g_L,i(f_(i,L)(h_i + noise), h_L, h_i)
         hidden_reconstructed = feedback_layer.feedback(output_noisy) + (
                     hidden_true - feedback_layer.feedback(output_true))
 
         # Compute the reconstruction error (DRL loss)
         # Loss = || g_L,i(f_i,L(h_i + noise), h_L, h_i) - (h_i + noise) ||^2
         loss = torch.mean((hidden_reconstructed - hidden_noisy) ** 2)
+        
 
         return loss
 
