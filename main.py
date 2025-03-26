@@ -4,6 +4,8 @@ import torch.optim as optim
 import numpy as np
 from typing import Dict, List, Tuple,Optional
 from tqdm import tqdm
+import os
+import re
 
 # script imports
 from network.dtp_networks import DDTPNetwork, DDTPRHLNetwork
@@ -410,6 +412,16 @@ def evaluate_reaching(
 
 if __name__ == "__main__":
     
+    ################################################################################################################
+    # Parametrization
+    
+    '''
+    Choose only_eval for using the last trained model instead of repeating the whole training process.
+    --> only_eval == True: Only Evaluation Process
+    --> only_eval == False: Training and Evaluation process
+    '''
+    ################################################################################################################
+    only_eval = False
     
     ################################################################################################################
     # Initalizations
@@ -428,52 +440,108 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     print(f'Pytorch version: {torch.__version__} running on {device}')
     
-    
-    #################################################################################################################
-    # Network definitions
-    #################################################################################################################
+    if only_eval == True:
+        #################################################################################################################
+        # Load pre-trained dnn and ddtp models
+        #################################################################################################################
+        # Base directory (current directory)
+        base_dir = "."
 
-    # Create Direct DTP network
-    ddtp_layer_sizes = [4, 128, 128, 2]
-    ddtp_network = create_ddtp_network(
-        layer_dims=ddtp_layer_sizes,
-        ff_activation='elu',
-        fb_activation='elu',
-        final_activation=None,
-        rhl_size=args.rhl_size
-    )
-    ddtp_network = ddtp_network.to(device)
-    
-    # Create Dense Neural Network
-    dnn_layer_sizes = [4, 128, 128, 2]
-    dnn = create_dnn(
-        layer_dims=dnn_layer_sizes,
-        activation="elu",
-        output_activation=None,
-    )
+        # Regex pattern for the date format YYYY_MM_DD
+        date_pattern = re.compile(r"\d{4}_\d{2}_\d{2}")
 
-    ##################################################################################################################
-    # Training
-    ##################################################################################################################
-    ddtp_history, dnn_history = train_networks(
-        ddtp=ddtp_network,
-        dnn=dnn,
-        num_epochs=args.num_epochs,
-        num_batches=args.num_batches,
-        batch_size=args.batch_size,
-        trainings_buffer_size=args.trainings_buffer_size,
-        arm=args.arm,
-        device=device,
-        validation_interval=args.validation_interval,
-        ddtp_lr_forward=args.lr_forward,
-        ddtp_lr_feedback=args.lr_feedback,
-        ddtp_feedback_weight_decay=args.feedback_weight_decay,
-        target_stepsize=args.target_stepsize,
-        sigma=args.sigma,
-        dnn_lr=args.dnn_lr,
-        dnn_criterion=args.dnn_criterion,
-        feedback_training_iterations=args.feedback_training_iterations
-    )
+        # Find all valid folders matching the date format
+        dated_folders = [
+            f for f in os.listdir(base_dir) 
+            if os.path.isdir(os.path.join(base_dir, f)) and date_pattern.fullmatch(f)
+        ]
+
+        # Determine the latest folder based on the date
+        if not dated_folders:
+            raise ValueError("No matching folder found!")
+
+        latest_folder = max(dated_folders, key=lambda d: datetime.strptime(d, "%Y_%m_%d"))
+        latest_folder_path = os.path.join(base_dir, latest_folder)
+
+        # Model file paths
+        ddtp_paths = [
+            os.path.join(latest_folder_path, "ddtp_network_right.pt"),
+            os.path.join(latest_folder_path, "ddtp_network_left.pt")
+        ]
+        dnn_paths = [
+            os.path.join(latest_folder_path, "dnn_network_right.pt"),
+            os.path.join(latest_folder_path, "dnn_network_left.pt")
+        ]
+
+        # Load models
+        ddtp_network = None
+        dnn_network = None
+
+        for path in ddtp_paths:
+            if os.path.exists(path):
+                ddtp_network = torch.load(path)
+                print(f"Loaded DDTP network: {path}")
+                break
+
+        for path in dnn_paths:
+            if os.path.exists(path):
+                dnn_network = torch.load(path)
+                print(f"Loaded DNN network: {path}")
+                break
+
+        # Check if models were successfully loaded
+        if ddtp_network is None:
+            print("No DDTP model found!")
+        if dnn_network is None:
+            print("No DNN model found!")
+
+    elif only_eval == False:
+        #################################################################################################################
+        # Network definitions
+        #################################################################################################################
+    
+        # Create Direct DTP network
+        ddtp_layer_sizes = [4, 128, 128, 2]
+        ddtp_network = create_ddtp_network(
+            layer_dims=ddtp_layer_sizes,
+            ff_activation='elu',
+            fb_activation='elu',
+            final_activation=None,
+            rhl_size=args.rhl_size
+        )
+        ddtp_network = ddtp_network.to(device)
+        
+        # Create Dense Neural Network
+        dnn_layer_sizes = [4, 128, 128, 2]
+        dnn = create_dnn(
+            layer_dims=dnn_layer_sizes,
+            activation="elu",
+            output_activation=None,
+        )
+
+        ##################################################################################################################
+        # Training
+        ##################################################################################################################
+        ddtp_history, dnn_history = train_networks(
+            ddtp=ddtp_network,
+            dnn=dnn,
+            num_epochs=args.num_epochs,
+            num_batches=args.num_batches,
+            batch_size=args.batch_size,
+            trainings_buffer_size=args.trainings_buffer_size,
+            arm=args.arm,
+            device=device,
+            validation_interval=args.validation_interval,
+            ddtp_lr_forward=args.lr_forward,
+            ddtp_lr_feedback=args.lr_feedback,
+            ddtp_feedback_weight_decay=args.feedback_weight_decay,
+            target_stepsize=args.target_stepsize,
+            sigma=args.sigma,
+            dnn_lr=args.dnn_lr,
+            dnn_criterion=args.dnn_criterion,
+            feedback_training_iterations=args.feedback_training_iterations
+        )
+        
     
     ###################################################################################################################
     # Evaluation
@@ -522,7 +590,7 @@ if __name__ == "__main__":
         axs[1].set_ylabel('Feedback Loss')
         axs[2].set_ylabel('Error (mm)')
         plt.tight_layout()
-        plt.savefig(os.path.joint(plot_folder, f"ddtp_history_{args.arm}.png"))
+        plt.savefig(os.path.join(plot_folder, f"ddtp_history_{args.arm}.png"))
         plt.close(fig)
 
         # Save model
