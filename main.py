@@ -14,7 +14,7 @@ from network.dtp_networks import DDTPNetwork, DDTPRHLNetwork
 from network.dnn_networks import DNN
 from environment import MovementBuffer, inverse_target_transform, create_batch
 from kinematics.planar_arms import PlanarArms
-from dimReduction import dimReduction, plotActivations, sensitivity_analysis
+from analysis import dimReduction, plotActivations, sensitivity_analysis
 from visualizations.validation_error import visualize_validation_error
 
 
@@ -463,7 +463,7 @@ if __name__ == "__main__":
     --> only_eval == False: Training and Evaluation process
     '''
     ################################################################################################################
-    only_eval = True
+    only_eval = False
     
     ################################################################################################################
     # Initalizations
