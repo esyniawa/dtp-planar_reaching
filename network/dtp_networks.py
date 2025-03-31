@@ -132,6 +132,24 @@ class DDTPNetwork(nn.Module):
         
 
         return loss
+    
+    def extract_hidden_activations(self, inputs):
+        """
+        Extracts hidden activations from the DDTPNetwork.
+        
+        :param model: The trained model (an instance of DDTPNetwork)
+        :param inputs: Input tensor to the network
+        :return: List of activations for each hidden layer
+        """
+        hidden_activations = []
+
+        # Perform a forward pass through the model
+        h = inputs
+        for layer in self.forward_layers:
+            h = layer(h)  # Compute forward pass through the model
+            hidden_activations.append(layer.output.detach())  # Store the activation (detach from computation graph)
+
+        return hidden_activations
 
 
 class DDTPRHLNetwork(nn.Module):
@@ -258,3 +276,24 @@ class DDTPRHLNetwork(nn.Module):
         loss = torch.mean((hidden_reconstructed - hidden_noisy) ** 2)
 
         return loss
+    
+
+
+    def extract_hidden_activations(self, inputs):
+        """
+        Extracts hidden activations from the DDTPNetwork.
+        
+        :param model: The trained model (an instance of DDTPNetwork)
+        :param inputs: Input tensor to the network
+        :return: List of activations for each hidden layer
+        """
+        hidden_activations = []
+
+        # Perform a forward pass through the model
+        h = inputs
+        for layer in self.forward_layers:
+            h = layer(h)  # Compute forward pass through the model
+            hidden_activations.append(layer.output.detach())  # Store the activation (detach from computation graph)
+
+        return hidden_activations
+

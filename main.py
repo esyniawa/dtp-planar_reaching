@@ -6,12 +6,16 @@ from typing import Dict, List, Tuple,Optional
 from tqdm import tqdm
 import os
 import re
+from datetime import datetime
+import matplotlib.pyplot as plt
 
 # script imports
 from network.dtp_networks import DDTPNetwork, DDTPRHLNetwork
 from network.dnn_networks import DNN
 from environment import MovementBuffer, inverse_target_transform, create_batch
 from kinematics.planar_arms import PlanarArms
+from dimReduction import dimReduction, plotActivations, sensitivity_analysis
+from visualizations.validation_error import visualize_validation_error
 
 
 def argument_parser():
@@ -83,7 +87,7 @@ def train_dnn_epoch(
     
     # Create optimizer
     params = []
-    for layer in network.layers:
+    for layer in network.forward_layers:
         params.extend(list(layer.parameters()))
         
     optimizer = optim.Adam(params, lr=lr)  
@@ -332,7 +336,7 @@ def train_networks(
         
         # DDTP Evaluation
         if (epoch + 1) % validation_interval == 0:
-            ddtp_val_error = evaluate_reaching(
+            ddtp_val_error, _, _, _, _, _ = evaluate_reaching(
                 network=ddtp,
                 num_tests=50,
                 arm=arm,
@@ -348,7 +352,7 @@ def train_networks(
         
         # DNN Evaluation
         if (epoch + 1) % validation_interval == 0:
-            dnn_val_error = evaluate_reaching(
+            dnn_val_error, _, _, _, _, _ = evaluate_reaching(
                 network=dnn,
                 num_tests=50,
                 arm=arm,
@@ -373,6 +377,18 @@ def evaluate_reaching(
     """Evaluate the network's reaching accuracy."""
     network.eval()
     total_error = 0.0
+    network_type = type(network).__name__
+    
+    # Define list for errors
+    errors = []
+    
+    # Define collection of hidden_activations
+    hidden_activations = [[] for _ in range(len(network.layer_sizes)-1)]
+    
+    # Define collection of all targets and outputs
+    target = []
+    output = []
+    
 
     with torch.no_grad():
         for _ in range(num_tests):
@@ -382,9 +398,26 @@ def evaluate_reaching(
                 device=device
             )
             inputs, targets = inputs.to(device), targets.to(device)
+            
+            # Append target-list
+            target.append(targets)
+            
+            #####################################################################################################
+            # Extract Hidden Activations
+            #####################################################################################################
+            hidden_batch_activations = network.extract_hidden_activations(inputs)
+            
+            # Collect activations from all batches
+            for i in range(len(network.layer_sizes)-1):
+                hidden_activations[i].append(hidden_batch_activations[i])
 
+            
+            #####################################################################################################
+            # Performance Validation
+            #####################################################################################################  
             # Get network prediction
             outputs = network(inputs)
+            output.append(outputs)
 
             # Convert network outputs and targets back to radians
             target_delta_thetas = inverse_target_transform(targets.cpu().numpy())
@@ -405,9 +438,18 @@ def evaluate_reaching(
             )[:, -1]
 
             error = np.linalg.norm(target_xy - pred_xy)
+            errors.append(error)
+            
             total_error += error
 
-    return total_error / num_tests
+        
+        
+        
+        
+        
+        
+        
+    return total_error / num_tests, network_type, errors, hidden_activations, target, output
 
 
 if __name__ == "__main__":
@@ -421,7 +463,7 @@ if __name__ == "__main__":
     --> only_eval == False: Training and Evaluation process
     '''
     ################################################################################################################
-    only_eval = False
+    only_eval = True
     
     ################################################################################################################
     # Initalizations
@@ -440,15 +482,18 @@ if __name__ == "__main__":
         device = torch.device("cpu")
     print(f'Pytorch version: {torch.__version__} running on {device}')
     
+    # Record Datetime
+    current_date =datetime.now().strftime('%Y%m%d_%H%M%S')
+    
     if only_eval == True:
         #################################################################################################################
         # Load pre-trained dnn and ddtp models
         #################################################################################################################
         # Base directory (current directory)
-        base_dir = "."
+        base_dir = "./models"
 
         # Regex pattern for the date format YYYY_MM_DD
-        date_pattern = re.compile(r"\d{4}_\d{2}_\d{2}")
+        date_pattern = re.compile(r"\d{4}\d{2}\d{2}_\d{2}\d{2}\d{2}")
 
         # Find all valid folders matching the date format
         dated_folders = [
@@ -460,22 +505,22 @@ if __name__ == "__main__":
         if not dated_folders:
             raise ValueError("No matching folder found!")
 
-        latest_folder = max(dated_folders, key=lambda d: datetime.strptime(d, "%Y_%m_%d"))
+        latest_folder = max(dated_folders, key=lambda d: datetime.strptime(d, "%Y%m%d_%H%M%S"))
         latest_folder_path = os.path.join(base_dir, latest_folder)
 
         # Model file paths
         ddtp_paths = [
-            os.path.join(latest_folder_path, "ddtp_network_right.pt"),
-            os.path.join(latest_folder_path, "ddtp_network_left.pt")
+            os.path.join(latest_folder_path, "models/ddtp_network_right.pt"),
+            os.path.join(latest_folder_path, "models/ddtp_network_left.pt")
         ]
         dnn_paths = [
-            os.path.join(latest_folder_path, "dnn_network_right.pt"),
-            os.path.join(latest_folder_path, "dnn_network_left.pt")
+            os.path.join(latest_folder_path, "models/dnn_network_right.pt"),
+            os.path.join(latest_folder_path, "models/dnn_network_left.pt")
         ]
 
         # Load models
         ddtp_network = None
-        dnn_network = None
+        dnn = None
 
         for path in ddtp_paths:
             if os.path.exists(path):
@@ -485,14 +530,14 @@ if __name__ == "__main__":
 
         for path in dnn_paths:
             if os.path.exists(path):
-                dnn_network = torch.load(path)
-                print(f"Loaded DNN network: {path}")
+                dnn = torch.load(path)
+                print(f"Loaded DNN: {path}")
                 break
 
         # Check if models were successfully loaded
         if ddtp_network is None:
             print("No DDTP model found!")
-        if dnn_network is None:
+        if dnn is None:
             print("No DNN model found!")
 
     elif only_eval == False:
@@ -548,7 +593,7 @@ if __name__ == "__main__":
     ###################################################################################################################
 
     # Final DDTP evaluation
-    final_ddtp_error = evaluate_reaching(
+    final_ddtp_error, ddtp_network_type, ddtp_errors, ddtp_hidden_activations, ddtp_target, ddtp_output = evaluate_reaching(
         network=ddtp_network,
         num_tests=1_000,
         arm=args.arm,
@@ -557,7 +602,7 @@ if __name__ == "__main__":
     print(f"Final DDTP reaching error: {final_ddtp_error:.2f} mm")
     
     # Final DNN evaluation
-    final_dnn_error = evaluate_reaching(
+    final_dnn_error, dnn_network_type, dnn_errors, dnn_hidden_activations, dnn_target, dnn_output = evaluate_reaching(
         network=dnn,
         num_tests=1_000,
         arm=args.arm,
@@ -565,13 +610,19 @@ if __name__ == "__main__":
     )
     print(f"Final DNN reaching error: {final_dnn_error:.2f} mm")
 
+    
+    ############################################################################
+    # Visualize Validation error
+    ############################################################################
+    visualize_validation_error(ddtp_network_type, ddtp_errors, current_date)
+    visualize_validation_error(dnn_network_type, dnn_errors, current_date)
+    
+        
     # Plot history
-    if args.plot_history:
+    if args.plot_history and not only_eval:
         import os
         import matplotlib.pyplot as plt
-        import datetime
 
-        current_date = datetime.datetime.now().strftime('%Y_%m_%d')
         plot_folder = os.path.join(current_date,"figures")
         os.makedirs(plot_folder, exist_ok=True)
 
@@ -594,9 +645,11 @@ if __name__ == "__main__":
         plt.close(fig)
 
         # Save model
-        model_folder = os.path.join(current_date,"models")
+        base_folder = os.path.join("models", current_date)
+        model_folder = os.path.join(base_folder,"models")
         os.makedirs(model_folder, exist_ok=True)
-        torch.save(ddtp_network.state_dict(), os.path.join(model_folder, f"ddtp_network_{args.arm}.pt"))
+        torch.save(ddtp_network.state_dict(), os.path.join(model_folder, f"ddtp_network_{args.arm}_weights.pt"))
+        torch.save(ddtp_network, os.path.join(model_folder, f"ddtp_network_{args.arm}.pt"))
 
     
     
@@ -617,4 +670,34 @@ if __name__ == "__main__":
         plt.close(fig)
 
         # Save model
-        torch.save(ddtp_network.state_dict(), os.path.join(model_folder, f"dnn_network_{args.arm}.pt"))
+        torch.save(dnn.state_dict(), os.path.join(model_folder, f"dnn_network_{args.arm}_weights.pt"))
+        torch.save(dnn, os.path.join(model_folder, f"dnn_network_{args.arm}.pt"))
+        
+    
+
+    
+    
+    #######################################################################################################
+    # Dimensionality Reduction -> Visualize Hidden Representations using PCA and UMAP
+    #######################################################################################################
+    # DDTP
+    dimReduction(network=ddtp_network, current_date=current_date, hidden_activations=ddtp_hidden_activations, target_angles=ddtp_target, method='PCA')
+    dimReduction(network=ddtp_network, current_date=current_date, hidden_activations=ddtp_hidden_activations, target_angles=ddtp_target, method='UMAP')
+    
+    dimReduction(network=dnn, current_date=current_date, hidden_activations=dnn_hidden_activations, target_angles=dnn_target, method='PCA')
+    dimReduction(network=dnn, current_date=current_date, hidden_activations=dnn_hidden_activations, target_angles=dnn_target, method='UMAP')
+    
+    #######################################################################################################
+    # Plot mean activation of neurons in each layer
+    #######################################################################################################
+    plotActivations(network=ddtp_network, current_date=current_date, hidden_activations=ddtp_hidden_activations)
+    plotActivations(network=dnn, current_date=current_date, hidden_activations=dnn_hidden_activations)
+    
+    #######################################################################################################
+    # Sensitivity Analysis
+    #######################################################################################################
+    sensitivity_analysis(network=ddtp_network, original_output=ddtp_output, hidden_activations=ddtp_hidden_activations, target_angles=ddtp_target, current_date=current_date)
+    sensitivity_analysis(network=dnn, original_output=dnn_output, hidden_activations=dnn_hidden_activations, target_angles=dnn_target, current_date=current_date)
+    
+    
+    
